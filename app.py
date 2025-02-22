@@ -3,9 +3,12 @@
 # -----------------------------------------------------------------------------
 
 import gradio as gr
-from modules.processing import process_action, stop_scan
+from modules.processing import process_action
 import os
 import time
+
+# Remove circular import
+STOP_REQUESTED = False
 
 def update_logs():
     try:
@@ -13,6 +16,11 @@ def update_logs():
             return f.read()
     except Exception as e:
         return f"Error reading log file: {e}"
+
+# Define stop_scan BEFORE it's referenced in the Blocks context
+def stop_scan():
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
 
 with gr.Blocks() as app:
     gr.Markdown("# Duplicate Deducer")
@@ -31,10 +39,8 @@ with gr.Blocks() as app:
                     value="Find Duplicates",
                 )
             with gr.Row():
-                target_folder_input = gr.File(
-                    label="Select Target Folder (For Moving Duplicates)",
-                    file_count="directory"
-                )
+               # Changed target_folder widget from a File component to a Textbox for folder path input.
+                target_folder_input = gr.Textbox(label="Target Folder (For Moving Duplicates)", placeholder="Enter folder path here")
                 save_csv = gr.Checkbox(label="Save duplicate info to CSV", value=False)
             with gr.Row():
                 submit_button = gr.Button("Submit")
@@ -60,16 +66,31 @@ with gr.Blocks() as app:
         show_progress=False,
         queue=False
     )
-    
 
+    # Handle the submit button click event
     submit_button.click(
-         fn=process_action,
-         inputs=[folders_input, file_extension_input, min_size_input, action, target_folder_input, save_csv],
-         outputs=[status_output, main_output, progress_output, stat_details, report_output]
+        fn=process_action,
+        inputs=[
+            folders_input, 
+            file_extension_input,
+            min_size_input,
+            action,
+            target_folder_input,
+            save_csv,
+            gr.State(lambda: STOP_REQUESTED)  # Add as last input
+        ],
+        outputs=[status_output, main_output, progress_output, stat_details, report_output],
+        concurrency_limit=1
     )
-    
-    stop_button.click(fn=stop_scan, inputs=[], outputs=[])
-    
+
+    # Handle the stop button click event
+    stop_button.click(
+        fn=stop_scan,
+        inputs=[],
+        outputs=[],
+        queue=False
+    )
+
 if __name__ == "__main__":
     app.queue()  # Enable streaming for Gradio
     app.launch()
