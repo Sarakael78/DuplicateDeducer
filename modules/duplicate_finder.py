@@ -8,422 +8,444 @@ import time
 import xxhash
 import csv
 from collections import defaultdict
+from typing import List, Tuple, Dict, Generator, Callable, Optional
 from modules.logger_config import logger
 
-
 class DuplicateFinder:
-    """
-    Scans directories recursively to identify duplicate files based on their content
-    using a two-step hashing approach for efficiency.
+	"""
+	Scans directories recursively to identify duplicate files based on their content
+	using a two-step hashing approach for efficiency.
 
-    Attributes
-    ----------
-    root_folder : str
-        Absolute path of the folder to scan.
-    file_extension : str or None
-        Optional filter to scan only files with the specified extension.
-    min_size : int
-        Minimum file size in bytes to be considered for scanning.
-    cache_file : str
-        Path to the hash cache file.
-    hash_cache : dict
-        Dictionary storing file paths and their corresponding full hashes.
-    csv_file : str
-        Path to the CSV file where duplicate information is saved.
-    save_csv : bool
-        Flag indicating whether to save duplicate information to CSV.
-    """
+	Attributes:
+	-----------
+	rootFolder : str
+		Absolute path of the folder to scan.
+	fileExtension : Optional[str]
+		Optional filter to scan only files with the specified extension.
+	minSize : int
+		Minimum file size in bytes to be considered for scanning.
+	cacheFile : str
+		Path to the hash cache file.
+	hashCache : Dict[str, Tuple[float, str]]
+		Dictionary storing file paths and their corresponding full hashes along with modification time.
+	csvFile : str
+		Path to the CSV file where duplicate information is saved.
+	saveCsv : bool
+		Flag indicating whether to save duplicate information to CSV.
+	"""
 
-    def __init__(self, root_folder: str, file_extension: str = None, min_size: int = 0) -> None:
-        """
-        Initializes the DuplicateFinder with the specified parameters.
+	def __init__(self, rootFolder: str, fileExtension: Optional[str] = None, minSize: int = 0, saveCsv: bool = False) -> None:
+		"""
+		Initialises the DuplicateFinder with the specified parameters.
 
-        Parameters
-        ----------
-        root_folder : str
-            Folder path to scan.
-        file_extension : str, optional
-            Optional file extension filter. Defaults to None.
-        min_size : int, optional
-            Minimum file size in bytes. Defaults to 0.
-        """
-        self.root_folder = os.path.abspath(os.path.expanduser(root_folder))
-        self.file_extension = file_extension.strip() if file_extension and file_extension.strip() != "" else None
-        self.min_size = min_size  # in bytes
-        self.cache_file = "hash_cache.pkl"
-        self.hash_cache = self.load_hash_cache()
-        self.csv_file = "duplicates.csv"
-        self.save_csv = False
+		Parameters:
+		-----------
+		rootFolder : str
+			Folder path to scan.
+		fileExtension : Optional[str], optional
+			Optional file extension filter. Defaults to None.
+		minSize : int, optional
+			Minimum file size in bytes. Defaults to 0.
+		saveCsv : bool, optional
+			Flag indicating whether to save duplicate information to CSV. Defaults to False.
+		"""
+		self.rootFolder: str = os.path.abspath(os.path.expanduser(rootFolder))
+		self.fileExtension: Optional[str] = fileExtension.strip() if fileExtension and fileExtension.strip() != "" else None
+		self.minSize: int = minSize  # in bytes
+		self.cacheFile: str = "hash_cache.pkl"
+		self.hashCache: Dict[str, Tuple[float, str]] = self.loadHashCache()
+		self.csvFile: str = "duplicates.csv"
+		self.saveCsv: bool = saveCsv
 
-    def load_hash_cache(self) -> dict:
-        """
-        Loads the hash cache from the cache file if it exists.
+	def __del__(self) -> None:
+		"""
+		Destructor to ensure that the hash cache is saved upon deletion of the instance.
+		"""
+		self.saveHashCache()
+		logger.info("DuplicateFinder instance destroyed. Hash cache saved.")
 
-        Returns
-        -------
-        dict
-            Loaded hash cache or an empty dictionary if loading fails.
-        """
-        if os.path.exists(self.cache_file):
-            try:
-                with open(self.cache_file, "rb") as f:
-                    cache = pickle.load(f)
-                    logger.info("Hash cache loaded successfully.")
-                    return cache
-            except Exception as e:
-                logger.error(f"Error loading hash cache: {e}")
-        return {}
+	def loadHashCache(self) -> Dict[str, Tuple[float, str]]:
+		"""
+		Loads the hash cache from the cache file if it exists.
 
-    def save_hash_cache(self) -> None:
-        """
-        Saves the current hash cache to the cache file.
-        """
-        try:
-            with open(self.cache_file, "wb") as f:
-                pickle.dump(self.hash_cache, f)
-            logger.info("Hash cache saved.")
-        except Exception as e:
-            logger.error(f"Error saving hash cache: {e}")
+		Returns:
+		--------
+		Dict[str, Tuple[float, str]]
+			Loaded hash cache or an empty dictionary if loading fails.
+		"""
+		if os.path.exists(self.cacheFile):
+			try:
+				logger.info("Loading hash cache.")
+				with open(self.cacheFile, "rb") as f:
+					cache = pickle.load(f)
+				logger.info("Hash cache loaded successfully.")
+				return cache
+			except Exception as e:
+				logger.error(f"Error loading hash cache: {e}")
+		return {}
 
-    def calculate_quick_hash(self, file_path: str, sample_size: int = 4096) -> str:
-        """
-        Calculates a quick hash of the first few kilobytes of the file.
+	def saveHashCache(self) -> None:
+		"""
+		Saves the current hash cache to the cache file.
+		"""
+		try:
+			with open(self.cacheFile, "wb") as f:
+				pickle.dump(self.hashCache, f)
+			logger.info("Hash cache saved.")
+		except Exception as e:
+			logger.error(f"Error saving hash cache: {e}")
 
-        Parameters
-        ----------
-        file_path : str
-            Path to the file.
-        sample_size : int, optional
-            Number of bytes to read for the quick hash. Defaults to 4096.
+	def calculateQuickHash(self, filePath: str, sampleSize: int = 4096) -> Optional[str]:
+		"""
+		Calculates a quick hash of the first few kilobytes of the file.
 
-        Returns
-        -------
-        str
-            The calculated quick hash as a hexadecimal string.
-            Returns None if an error occurs.
-        """
-        try:
-            with open(file_path, "rb") as f:
-                sample = f.read(sample_size)
-        except Exception as e:
-            logger.error(f"Error reading file '{file_path}' for quick hash: {e}")
-            return None
+		Parameters:
+		-----------
+		filePath : str
+			Path to the file.
+		sampleSize : int, optional
+			Number of bytes to read for the quick hash. Defaults to 4096.
 
-        h = xxhash.xxh64()
-        h.update(sample)
-        return h.hexdigest()
+		Returns:
+		--------
+		Optional[str]
+			The calculated quick hash as a hexadecimal string.
+			Returns None if an error occurs.
+		"""
+		try:
+			with open(filePath, "rb") as f:
+				sample = f.read(sampleSize)
+		except FileNotFoundError:
+			logger.error(f"File not found: '{filePath}'. Skipping quick hash.")
+			return None
+		except PermissionError:
+			logger.error(f"Permission denied: '{filePath}'. Skipping quick hash.")
+			return None
+		except Exception as e:
+			logger.error(f"Unexpected error reading file '{filePath}' for quick hash: {e}")
+			return None
 
-    def calculate_full_hash(self, file_path: str, chunk_size: int = 1024) -> str:
-        """
-        Calculates the full hash of the file by reading it in chunks.
+		hasher = xxhash.xxh64()
+		hasher.update(sample)
+		return hasher.hexdigest()
 
-        Utilizes caching to avoid recalculating hashes for unchanged files.
+	def calculateFullHash(self, filePath: str, chunkSize: int = 65536) -> Optional[str]:
+		"""
+		Calculates the full hash of the file by reading it in chunks.
 
-        Parameters
-        ----------
-        file_path : str
-            Path to the file.
-        chunk_size : int, optional
-            Size of each chunk to read from the file. Defaults to 1024.
+		Utilises caching to avoid recalculating hashes for unchanged files.
 
-        Returns
-        -------
-        str
-            The calculated full hash as a hexadecimal string.
-            Returns None if an error occurs.
-        """
-        try:
-            mod_time = os.path.getmtime(file_path)
-        except Exception as e:
-            logger.error(f"Error getting modification time for file '{file_path}': {e}")
-            return None
+		Parameters:
+		-----------
+		filePath : str
+			Path to the file.
+		chunkSize : int, optional
+			Size of each chunk to read from the file. Defaults to 65536.
 
-        if file_path in self.hash_cache:
-            cached_mod_time, cached_hash = self.hash_cache[file_path]
-            if cached_mod_time == mod_time:
-                return cached_hash
+		Returns:
+		--------
+		Optional[str]
+			The calculated full hash as a hexadecimal string.
+			Returns None if an error occurs.
+		"""
+		try:
+			modTime = os.path.getmtime(filePath)
+		except Exception as e:
+			logger.error(f"Error getting modification time for file '{filePath}': {e}")
+			return None
 
-        h = xxhash.xxh64()
-        try:
-            with open(file_path, "rb") as f:
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                    h.update(chunk)
-        except Exception as e:
-            logger.error(f"Error reading file '{file_path}' for full hash: {e}")
-            return None
+		if filePath in self.hashCache:
+			cachedModTime, cachedHash = self.hashCache[filePath]
+			if cachedModTime == modTime:
+				return cachedHash
 
-        file_hash = h.hexdigest()
-        self.hash_cache[file_path] = (mod_time, file_hash)
-        return file_hash
+		hasher = xxhash.xxh64()
+		try:
+			with open(filePath, "rb") as f:
+				while (chunk := f.read(chunkSize)):
+					hasher.update(chunk)
+		except FileNotFoundError:
+			logger.error(f"File not found: '{filePath}'. Skipping full hash.")
+			return None
+		except PermissionError:
+			logger.error(f"Permission denied: '{filePath}'. Skipping full hash.")
+			return None
+		except Exception as e:
+			logger.error(f"Unexpected error reading file '{filePath}' for full hash: {e}")
+			return None
 
-    def group_files_by_size(self) -> dict:
-        """
-        Groups files in the root folder by their size.
+		fileHash = hasher.hexdigest()
+		self.hashCache[filePath] = (modTime, fileHash)
+		return fileHash
 
-        Returns
-        -------
-        dict
-            A dictionary where keys are file sizes and values are lists of file paths.
-        """
-        size_dict = {}
-        for dirpath, _, filenames in os.walk(self.root_folder):
-            for filename in filenames:
-                if self.file_extension and not filename.endswith(self.file_extension):
-                    continue
-                file_path = os.path.join(dirpath, filename)
-                try:
-                    size = os.path.getsize(file_path)
-                    if self.min_size and size < self.min_size:
-                        continue
-                except Exception as e:
-                    logger.error(f"Error getting size for file '{file_path}': {e}")
-                    continue
-                size_dict.setdefault(size, []).append(file_path)
-        return size_dict
+	def groupFilesBySize(self) -> Dict[int, List[str]]:
+		"""
+		Groups files in the root folder by their size.
 
-    def get_initial_stats(self) -> dict:
-        """
-        Gathers initial statistics about the files and folders in the root directory.
+		Returns:
+		--------
+		Dict[int, List[str]]
+			A dictionary where keys are file sizes and values are lists of file paths.
+		"""
+		sizeDict: Dict[int, List[str]] = {}
+		for dirpath, _, filenames in os.walk(self.rootFolder):
+			for filename in filenames:
+				if self.fileExtension and not filename.endswith(self.fileExtension):
+					continue
+				filePath = os.path.join(dirpath, filename)
+				try:
+					size = os.path.getsize(filePath)
+					if self.minSize and size < self.minSize:
+						continue
+				except Exception as e:
+					logger.error(f"Error getting size for file '{filePath}': {e}")
+					continue
+				sizeDict.setdefault(size, []).append(filePath)
+		return sizeDict
 
-        Returns
-        -------
-        dict
-            A dictionary containing total files, total subfolders, and files with unique sizes.
-        """
-        total_files = 0
-        total_subfolders = 0
-        for _, dirnames, filenames in os.walk(self.root_folder):
-            total_subfolders += len(dirnames)
-            total_files += len(filenames)
-        unique_size_files = 0
-        size_dict = self.group_files_by_size()
-        for files in size_dict.values():
-            if len(files) == 1:
-                unique_size_files += 1
-        return {"total_files": total_files, "total_subfolders": total_subfolders, "unique_size_files": unique_size_files}
+	def getInitialStats(self) -> Dict[str, int]:
+		"""
+		Gathers initial statistics about the files and folders in the root directory.
 
-    def _append_duplicate_csv(self, duplicate_file: str, original_file: str) -> None:
-        """
-        Appends information about a duplicate file to the CSV file.
+		Returns:
+		--------
+		Dict[str, int]
+			A dictionary containing total files, total subfolders, and files with unique sizes.
+		"""
+		totalFiles = 0
+		totalSubfolders = 0
+		for _, dirnames, filenames in os.walk(self.rootFolder):
+			totalSubfolders += len(dirnames)
+			totalFiles += len(filenames)
+		uniqueSizeFiles = 0
+		sizeDict = self.groupFilesBySize()
+		for files in sizeDict.values():
+			if len(files) == 1:
+				uniqueSizeFiles += 1
+		return {"totalFiles": totalFiles, "totalSubfolders": totalSubfolders, "uniqueSizeFiles": uniqueSizeFiles}
 
-        Parameters
-        ----------
-        duplicate_file : str
-            Path to the duplicate file.
-        original_file : str
-            Path to the original file.
-        """
-        header = ['timestamp', 'duplicate_file', 'original_file']
-        file_exists = os.path.exists(self.csv_file)
-        try:
-            with open(self.csv_file, 'a', newline='', encoding='utf-8') as csvfile:
-                writer = csv.writer(csvfile)
-                if not file_exists:
-                    writer.writerow(header)
-                writer.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), duplicate_file, original_file])
-        except Exception as e:
-            logger.error(f"Error writing to CSV file '{self.csv_file}': {e}")
+	def _appendDuplicateCsv(self, duplicateFile: str, originalFile: str) -> None:
+		"""
+		Appends information about a duplicate file to the CSV file.
 
-    def find_duplicates(self) -> list:
-        """
-        Identifies duplicate files by comparing their hashes.
+		Parameters:
+		-----------
+		duplicateFile : str
+			Path to the duplicate file.
+		originalFile : str
+			Path to the original file.
+		"""
+		header = ['timestamp', 'duplicate_file', 'original_file']
+		fileExists = os.path.exists(self.csvFile)
+		try:
+			with open(self.csvFile, 'a', newline='', encoding='utf-8') as csvfile:
+				writer = csv.writer(csvfile)
+				if not fileExists:
+					writer.writerow(header)
+				writer.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), duplicateFile, originalFile])
+		except Exception as e:
+			logger.error(f"Error writing to CSV file '{self.csvFile}': {e}")
 
-        Returns
-        -------
-        list
-            A list of tuples where each tuple contains the path to a duplicate file and its original.
-        """
-        size_dict = self.group_files_by_size()
-        duplicates = []
-        logger.info(f"Starting full scan in folder: {self.root_folder}")
+	def findDuplicates(self) -> List[Tuple[str, str]]:
+		"""
+		Identifies duplicate files by comparing their hashes.
 
-        for size, files in size_dict.items():
-            if len(files) < 2:
-                continue
-            quick_groups = {}
-            for file_path in files:
-                quick_hash = self.calculate_quick_hash(file_path)
-                if not quick_hash:
-                    continue
-                quick_groups.setdefault(quick_hash, []).append(file_path)
+		Returns:
+		--------
+		List[Tuple[str, str]]
+			A list of tuples where each tuple contains the path to a duplicate file and its original.
+		"""
+		sizeDict = self.groupFilesBySize()
+		duplicates: List[Tuple[str, str]] = []
+		logger.info(f"Starting full scan in folder: {self.rootFolder}")
 
-            for quick, file_list in quick_groups.items():
-                if len(file_list) < 2:
-                    continue
-                full_hashes = {}
-                for file_path in file_list:
-                    full_hash = self.calculate_full_hash(file_path)
-                    if not full_hash:
-                        continue
-                    if full_hash in full_hashes:
-                        orig = full_hashes[full_hash]
-                        if os.path.dirname(file_path).lower() < os.path.dirname(orig).lower():
-                            original, duplicate = file_path, orig
-                            full_hashes[full_hash] = original
-                        else:
-                            original, duplicate = orig, file_path
-                        logger.info(f"Duplicate found: {duplicate} (duplicate) -> {original} (original)")
-                        duplicates.append((duplicate, original))
-                    else:
-                        full_hashes[full_hash] = file_path
-        self.save_hash_cache()
-        return duplicates
+		for size, files in sizeDict.items():
+			if len(files) < 2:
+				continue
+			quickGroups: Dict[str, List[str]] = {}
+			for filePath in files:
+				quickHash = self.calculateQuickHash(filePath)
+				if not quickHash:
+					continue
+				quickGroups.setdefault(quickHash, []).append(filePath)
 
-    def find_duplicates_stream(self, stop_requested_callback=lambda: False):
-        """
-        Generator that yields status updates while finding duplicates, allowing for real-time progress tracking.
+			for quick, fileList in quickGroups.items():
+				if len(fileList) < 2:
+					continue
+				fullHashes: Dict[str, str] = {}
+				for filePath in fileList:
+					fullHash = self.calculateFullHash(filePath)
+					if not fullHash:
+						continue
+					if fullHash in fullHashes:
+						orig = fullHashes[fullHash]
+						# Determine original vs duplicate based on folder name comparison
+						if os.path.dirname(filePath).lower() < os.path.dirname(orig).lower():
+							original, duplicate = filePath, orig
+							fullHashes[fullHash] = original
+						else:
+							original, duplicate = orig, filePath
+						logger.info(f"Duplicate found: {duplicate} (duplicate) -> {original} (original)")
+						duplicates.append((duplicate, original))
+						if self.saveCsv:
+							self._appendDuplicateCsv(duplicate, original)
+					else:
+						fullHashes[fullHash] = filePath
+		self.saveHashCache()
+		return duplicates
 
-        Parameters
-        ----------
-        stop_requested_callback : callable, optional
-            A callback function that returns True if a stop has been requested. Defaults to a no-op.
+	def findDuplicatesStream(self, stopRequestedCallback: Callable[[], bool] = lambda: False) -> Generator[Tuple[str, str, str, str], None, None]:
+		"""
+		Generator that yields status updates while finding duplicates, allowing for real‐time progress tracking.
 
-        Yields
-        ------
-        tuple
-            A tuple containing status message, accumulated duplicate HTML, progress HTML, and statistics info.
-        """
-        # Step 1: Group files by size and remove files with unique sizes.
-        size_dict = self.group_files_by_size()
-        candidate_files = []
-        for files in size_dict.values():
-            if len(files) > 1:
-                candidate_files.extend(files)
+		Parameters:
+		-----------
+		stopRequestedCallback : Callable[[], bool], optional
+			A callback function that returns True if a stop has been requested. Defaults to a no‐op.
 
-        # Get initial statistics.
-        initial_stats = self.get_initial_stats()
-        total_candidate_files = len(candidate_files)
-        start_time = time.time()
-        progress_html = (
-            f"<progress value='0' max='100'></progress>"
-            f"<p>Processed 0 / {total_candidate_files} files.<br>Elapsed Time: 00:00:00, ETA: Calculating...</p>"
-        )
-        stats_info = (
-            f"<p>Total Files in Folder: {initial_stats['total_files']}<br>"
-            f"Total Subfolders: {initial_stats['total_subfolders']}<br>"
-            f"Files with Unique Size: {initial_stats['unique_size_files']}<br>"
-            f"Duplicates Found: 0</p>"
-        )
-        init_message = (
-            f"<p>Initialization: {initial_stats['total_files']} total files found. "
-            f"{total_candidate_files} candidate files for duplicate analysis (unique files excluded).</p>"
-        )
-        yield ("Initialization", init_message, progress_html, stats_info)
+		Yields:
+		-------
+		Tuple[str, str, str, str]
+			A tuple containing a status message, accumulated duplicate HTML, progress HTML, and statistics info.
+		"""
+		# Step 1: Group files by size and remove files with unique sizes.
+		sizeDict = self.groupFilesBySize()
+		candidateFiles: List[str] = []
+		for files in sizeDict.values():
+			if len(files) > 1:
+				candidateFiles.extend(files)
 
-        # Step 2: Begin scanning hashes.
-        yield ("Scanning Hashes", f"<p>Scanning {total_candidate_files} candidate files for duplicates...</p>", progress_html, stats_info)
+		# Get initial statistics.
+		initialStats = self.getInitialStats()
+		totalCandidateFiles = len(candidateFiles)
+		startTime = time.time()
+		progressHtml = (
+			f"<progress value='0' max='100'></progress>"
+			f"<p>Processed 0 / {totalCandidateFiles} files.<br>Elapsed Time: 00:00:00, ETA: Calculating...</p>"
+		)
+		statsInfo = (
+			f"<p>Total Files in Folder: {initialStats['totalFiles']}<br>"
+			f"Total Subfolders: {initialStats['totalSubfolders']}<br>"
+			f"Files with Unique Size: {initialStats['uniqueSizeFiles']}<br>"
+			f"Duplicates Found: 0</p>"
+		)
+		initMessage = (
+			f"<p>Initialisation: {initialStats['totalFiles']} total files found. "
+			f"{totalCandidateFiles} candidate files for duplicate analysis (unique files excluded).</p>"
+		)
+		yield ("Initialisation", initMessage, progressHtml, statsInfo)
 
-        processed_files = 0
-        total_duplicates = 0
-        accumulated_html = ""
-        quick_groups_stream = defaultdict(list)
+		# Step 2: Begin scanning hashes.
+		yield ("Scanning Hashes", f"<p>Scanning {totalCandidateFiles} candidate files for duplicates...</p>", progressHtml, statsInfo)
 
-        for file_path in candidate_files:
-            if stop_requested_callback():
-                progress_html = self._build_progress_html(processed_files, total_candidate_files, start_time)
-                yield (
-                    "Stopped",
-                    accumulated_html + f"<p>Scan stopped by user after processing {processed_files} files.</p>",
-                    progress_html,
-                    stats_info
-                )
-                self.save_hash_cache()
-                return
+		processedFiles = 0
+		totalDuplicates = 0
+		accumulatedHtml = ""
+		quickGroupsStream: Dict[str, List[Dict[str, Optional[str]]]] = defaultdict(list)
 
-            quick_hash = self.calculate_quick_hash(file_path)
-            if not quick_hash:
-                processed_files += 1
-                progress_html = self._build_progress_html(processed_files, total_candidate_files, start_time)
-                yield ("Scanning Hashes", accumulated_html, progress_html, stats_info)
-                continue
+		for filePath in candidateFiles:
+			if stopRequestedCallback():
+				progressHtml = self._buildProgressHtml(processedFiles, totalCandidateFiles, startTime)
+				yield (
+					"Stopped",
+					accumulatedHtml + f"<p>Scan stopped by user after processing {processedFiles} files.</p>",
+					progressHtml,
+					statsInfo
+				)
+				self.saveHashCache()
+				return
 
-            duplicate_found = False
-            for candidate in quick_groups_stream[quick_hash]:
-                if candidate["full"] is None:
-                    candidate["full"] = self.calculate_full_hash(candidate["path"])
-                current_full = self.calculate_full_hash(file_path)
-                if current_full == candidate["full"]:
-                    # Determine original vs duplicate based on folder name comparison.
-                    orig = candidate["path"]
-                    if os.path.dirname(file_path).lower() < os.path.dirname(orig).lower():
-                        original, duplicate = file_path, orig
-                        candidate["path"] = original  # update candidate to new original
-                    else:
-                        original, duplicate = orig, file_path
-                    duplicate_html = (
-                        f"<p><b>Duplicate Found:</b><br>"
-                        f"Duplicate: <a href='file://{duplicate}' target='_blank'>{duplicate}</a><br>"
-                        f"Original: <a href='file://{original}' target='_blank'>{original}</a></p>"
-                    )
-                    accumulated_html += duplicate_html
-                    logger.info(f"Streaming duplicate: {duplicate} duplicates {original}")
-                    total_duplicates += 1
-                    if self.save_csv:
-                        self._append_duplicate_csv(duplicate, original)
-                    duplicate_found = True
-                    break
+			quickHash = self.calculateQuickHash(filePath)
+			if not quickHash:
+				processedFiles += 1
+				progressHtml = self._buildProgressHtml(processedFiles, totalCandidateFiles, startTime)
+				yield ("Scanning Hashes", accumulatedHtml, progressHtml, statsInfo)
+				continue
 
-            if not duplicate_found:
-                quick_groups_stream[quick_hash].append({"path": file_path, "full": None})
+			duplicateFound = False
+			for candidate in quickGroupsStream[quickHash]:
+				if candidate["full"] is None:
+					candidate["full"] = self.calculateFullHash(candidate["path"])
+				currentFull = self.calculateFullHash(filePath)
+				if currentFull == candidate["full"]:
+					orig = candidate["path"]
+					# Determine original vs duplicate based on folder name comparison
+					if os.path.dirname(filePath).lower() < os.path.dirname(orig).lower():
+						original, duplicate = filePath, orig
+						candidate["path"] = original  # update candidate to new original
+					else:
+						original, duplicate = orig, filePath
+					duplicateHtml = (
+						f"<p><b>Duplicate Found:</b><br>"
+						f"Duplicate: <a href='file://{duplicate}' target='_blank'>{duplicate}</a><br>"
+						f"Original: <a href='file://{original}' target='_blank'>{original}</a></p>"
+					)
+					accumulatedHtml += duplicateHtml
+					logger.info(f"Streaming duplicate: {duplicate} duplicates {original}")
+					totalDuplicates += 1
+					if self.saveCsv:
+						self._appendDuplicateCsv(duplicate, original)
+					duplicateFound = True
+					break
 
-            processed_files += 1
-            progress_html = self._build_progress_html(processed_files, total_candidate_files, start_time)
-            stats_info = (
-                f"<p>Total Files in Folder: {initial_stats['total_files']}<br>"
-                f"Total Subfolders: {initial_stats['total_subfolders']}<br>"
-                f"Files with Unique Size: {initial_stats['unique_size_files']}<br>"
-                f"Duplicates Found: {total_duplicates}</p>"
-            )
-            yield ("Scanning Hashes", accumulated_html, progress_html, stats_info)
+			if not duplicateFound:
+				quickGroupsStream[quickHash].append({"path": filePath, "full": None})
 
-            if processed_files % 50 == 0:
-                self.save_hash_cache()
+			processedFiles += 1
+			progressHtml = self._buildProgressHtml(processedFiles, totalCandidateFiles, startTime)
+			statsInfo = (
+				f"<p>Total Files in Folder: {initialStats['totalFiles']}<br>"
+				f"Total Subfolders: {initialStats['totalSubfolders']}<br>"
+				f"Files with Unique Size: {initialStats['uniqueSizeFiles']}<br>"
+				f"Duplicates Found: {totalDuplicates}</p>"
+			)
+			yield ("Scanning Hashes", accumulatedHtml, progressHtml, statsInfo)
 
-        # Step 3: Finalization.
-        final_summary = f"<p><b>Finalization:</b> Total Duplicates Found: {total_duplicates}</p>"
-        accumulated_html += final_summary
-        final_progress = (
-            f"<progress value='100' max='100'></progress>"
-            f"<p>Processed {total_candidate_files} / {total_candidate_files} files.<br>"
-            f"Elapsed Time: {time.strftime('%H:%M:%S', time.gmtime(time.time()-start_time))}, ETA: 00:00:00</p>"
-        )
-        stats_info = (
-            f"<p>Total Files in Folder: {initial_stats['total_files']}<br>"
-            f"Total Subfolders: {initial_stats['total_subfolders']}<br>"
-            f"Files with Unique Size: {initial_stats['unique_size_files']}<br>"
-            f"Duplicates Found: {total_duplicates}</p>"
-        )
-        yield ("Finalization", accumulated_html, final_progress, stats_info)
-        self.save_hash_cache()
+			if processedFiles % 500 == 0:
+				self.saveHashCache()
 
-    def _build_progress_html(self, processed_files: int, total_files: int, start_time: float) -> str:
-        """
-        Builds the HTML string for displaying progress.
+		# Step 3: Finalisation.
+		finalSummary = f"<p><b>Finalisation:</b> Total Duplicates Found: {totalDuplicates}</p>"
+		accumulatedHtml += finalSummary
+		finalProgress = (
+			f"<progress value='100' max='100'></progress>"
+			f"<p>Processed {totalCandidateFiles} / {totalCandidateFiles} files.<br>"
+			f"Elapsed Time: {time.strftime('%H:%M:%S', time.gmtime(time.time()-startTime))}, ETA: 00:00:00</p>"
+		)
+		statsInfo = (
+			f"<p>Total Files in Folder: {initialStats['totalFiles']}<br>"
+			f"Total Subfolders: {initialStats['totalSubfolders']}<br>"
+			f"Files with Unique Size: {initialStats['uniqueSizeFiles']}<br>"
+			f"Duplicates Found: {totalDuplicates}</p>"
+		)
+		yield ("Finalisation", accumulatedHtml, finalProgress, statsInfo)
+		self.saveHashCache()
 
-        Parameters
-        ----------
-        processed_files : int
-            Number of files processed so far.
-        total_files : int
-            Total number of files to process.
-        start_time : float
-            Timestamp when the processing started.
+	def _buildProgressHtml(self, processedFiles: int, totalFiles: int, startTime: float) -> str:
+		"""
+		Builds the HTML string for displaying progress.
 
-        Returns
-        -------
-        str
-            HTML string representing the progress bar and time metrics.
-        """
-        elapsed_time = time.time() - start_time
-        estimated_remaining = (elapsed_time / processed_files) * (total_files - processed_files) if processed_files > 0 else 0
-        progress_percent = int((processed_files / total_files) * 100) if total_files > 0 else 100
-        elapsed_formatted = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-        eta_formatted = time.strftime("%H:%M:%S", time.gmtime(estimated_remaining)) if processed_files > 0 else "Calculating..."
-        return (
-            f"<progress value='{progress_percent}' max='100'></progress>"
-            f"<p>Processed {processed_files} / {total_files} files.<br>"
-            f"Elapsed Time: {elapsed_formatted}, ETA: {eta_formatted}</p>"
-        )
+		Parameters:
+		-----------
+		processedFiles : int
+			Number of files processed so far.
+		totalFiles : int
+			Total number of files to process.
+		startTime : float
+			Timestamp when the processing started.
+
+		Returns:
+		--------
+		str
+			HTML string representing the progress bar and time metrics.
+		"""
+		elapsedTime = time.time() - startTime
+		estimatedRemaining = (elapsedTime / processedFiles) * (totalFiles - processedFiles) if processedFiles > 0 else 0
+		progressPercent = int((processedFiles / totalFiles) * 100) if totalFiles > 0 else 100
+		elapsedFormatted = time.strftime("%H:%M:%S", time.gmtime(elapsedTime))
+		etaFormatted = time.strftime("%H:%M:%S", time.gmtime(estimatedRemaining)) if processedFiles > 0 else "Calculating..."
+		return (
+			f"<progress value='{progressPercent}' max='100'></progress>"
+			f"<p>Processed {processedFiles} / {totalFiles} files.<br>"
+			f"Elapsed Time: {elapsedFormatted}, ETA: {etaFormatted}</p>"
+		)
